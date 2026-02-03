@@ -7,6 +7,20 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, Form, HTTPException, UploadFile
 from faster_whisper import WhisperModel
+import os
+
+# Добавляем пути к библиотекам NVIDIA в окружение Windows
+venv_path = os.path.join(os.getcwd(), ".venv", "Lib", "site-packages")
+nvidia_paths = [
+    os.path.join(venv_path, "nvidia", "cudnn", "bin"),
+    os.path.join(venv_path, "nvidia", "cublas", "bin")
+]
+
+for path in nvidia_paths:
+    if os.path.exists(path):
+        os.add_dll_directory(path)
+        os.environ["PATH"] = path + os.pathsep + os.environ["PATH"]
+
 
 app = FastAPI()
 
@@ -14,7 +28,7 @@ app = FastAPI()
 OLLAMA_BASE_URL = "http://localhost:11434"
 
 # Initialize model on startup
-model = WhisperModel("large-v3", device="cuda", compute_type="float16")
+model = WhisperModel("small", device="cuda", compute_type="int8_float16")
 
 
 async def format_with_ollama(text: str, model_name: str, prompt: str) -> str:
@@ -57,7 +71,7 @@ async def transcribe_audio(
         segments, info = model.transcribe(
             audio=file_stream,
             beam_size=5,
-            language="ja",
+            initial_prompt="Hello, this is a technical conversation about device, software, coding, and development in Russian and English.",
             vad_filter=True,
             without_timestamps=True,
             condition_on_previous_text=False,
