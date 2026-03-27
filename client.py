@@ -7,272 +7,177 @@ import sounddevice as sd
 import soundfile as sf
 import keyboard
 import numpy as np
-
-# Новые зависимости для иконки в трее
+import pyperclip
+import customtkinter as ctk
 from PIL import Image, ImageDraw
 import pystray
 
 # Константы
 SAMPLE_RATE = 16000
 SERVER_URL = os.environ.get("WHISPER_SERVER", "http://localhost:18031")
-MIN_DURATION = 0.7  # Минимальная длина записи
-
+MIN_DURATION = 0.5
 
 def play_wav_background(file_path: str):
-    """Фоновый звук без блокировки."""
     def _play():
         try:
             data, fs = sf.read(file_path)
             sd.play(data, fs)
             sd.wait()
-        except:
-            pass
+        except: pass
     threading.Thread(target=_play, daemon=True).start()
 
+class ModernOverlay:
+    """Современный HUD оверлей на базе customtkinter."""
+    def __init__(self):
+        self.root = None
+        self.label = None
+        self.status_colors = {
+            'idle': ("#2ecc71", "#27ae60"),      # Зеленый
+            'recording': ("#e74c3c", "#c0392b"), # Красный
+            'error': ("#95a5a6", "#7f8c8d")      # Серый
+        }
 
-def _create_circle_icon(color, size=64, radius=None):
-    """Create a small circular RGBA icon for the tray."""
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    if radius is None:
-        radius = int(size * 0.4)
-    cx = cy = size // 2
-    draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=color)
-    return img
+    def _setup(self):
+        ctk.set_appearance_mode("dark")
+        self.root = ctk.CTk()
+        self.root.overrideredirect(True)
+        self.root.attributes("-topmost", True)
+        self.root.attributes("-alpha", 0.0) # Начинаем невидимыми
+        
+        # Размеры и позиция (внизу по центру)
+        w, h = 160, 45
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        self.root.geometry(f"{w}x{h}+{(sw-w)//2}+{sh - h - 100}")
+        
+        # Прозрачный фон окна (Windows-specific trick if needed, but CTk handles bg well)
+        self.root.wm_attributes("-transparentcolor", self.root._apply_appearance_mode(self.root.cget("fg_color")))
 
+        # "Пилюля" с иконкой и текстом
+        self.frame = ctk.CTkFrame(self.root, corner_radius=20, fg_color=self.status_colors['idle'][0])
+        self.frame.pack(fill="both", expand=True)
+
+        # Используем Unicode символ микрофона (Segoe UI Emoji)
+        self.icon_label = ctk.CTkLabel(self.frame, text="🎙️", font=("Segoe UI Emoji", 20))
+        self.icon_label.pack(side="left", padx=(15, 5))
+
+        self.text_label = ctk.CTkLabel(self.frame, text="READY", font=("Inter", 12, "bold"), text_color="white")
+        self.text_label.pack(side="left", padx=(5, 15))
+
+    def update(self, status):
+        if not self.root: return
+        
+        color = self.status_colors.get(status, self.status_colors['error'])[0]
+        text = "RECORDING" if status == 'recording' else "READY" if status == 'idle' else "ERROR"
+        
+        # Анимация появления/скрытия или просто смена цвета
+        self.frame.configure(fg_color=color)
+        self.text_label.configure(text=text)
+        
+        if status == 'recording':
+            self.root.attributes("-alpha", 1.0)
+        else:
+            # Скрываем через 2 секунды если idle
+            def hide():
+                if self.text_label.cget("text") != "RECORDING":
+                    self.root.attributes("-alpha", 0.0)
+            self.root.after(2000, hide)
+
+    def run(self):
+        self._setup()
+        self.root.mainloop()
 
 class VoiceTypingClient:
     def __init__(self):
         self.is_recording = False
         self.audio_data = []
         self.lock = threading.Lock()
-        self.recording_thread = None
-
-        # Используем только прямой ввод текста через keyboard.write — как раньше
-
-        # typing lock to prevent overlapping concurrent typing
         self.typing_lock = threading.Lock()
-
-        # Tray-related members
+        self.overlay = ModernOverlay()
         self.tray_icon = None
-        # Prepare icons now (PIL Image objects)
-        self._green_icon = _create_circle_icon((0, 200, 0, 255), size=64)
-        self._red_icon = _create_circle_icon((200, 0, 0, 255), size=64)
-        self._gray_icon = _create_circle_icon((120, 120, 120, 255), size=64)
+
+    def _generate_tray_icon(self, color):
+        """Генерирует иконку на лету без внешних файлов."""
+        img = Image.new("RGBA", (64, 64), (0,0,0,0))
+        draw = ImageDraw.Draw(img)
+        # Рисуем красивый кружочек
+        draw.ellipse((4, 4, 60, 60), fill=color)
+        # И схематичный микрофон внутри
+        draw.rectangle((24, 16, 40, 40), fill="white")
+        draw.arc((20, 24, 44, 48), start=0, end=180, fill="white", width=4)
+        return img
 
     def _record_loop(self):
-        """Внутренний цикл записи."""
         def callback(indata, frames, t, status):
             if self.is_recording:
-                with self.lock:
-                    self.audio_data.append(indata.copy())
-
+                with self.lock: self.audio_data.append(indata.copy())
         try:
             with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=callback):
-                while self.is_recording:
-                    time.sleep(0.05)
+                while self.is_recording: time.sleep(0.05)
         except Exception as e:
-            print(f"Микрофон: {e}")
-            self.is_recording = False
-            # Обновляем трей в случае ошибки
-            try:
-                self._set_tray_status('stopped')
-            except Exception:
-                pass
+            print(f"Mic error: {e}")
+            self._update_status('error')
 
-    # Раньше были фоллбеки через буфер и сложные бэкенды — убраны. Всегда прямой набор.
+    def _insert_text(self, text):
+        if not text: return
+        with self.typing_lock:
+            try:
+                old = pyperclip.paste()
+                pyperclip.copy(text + " ")
+                keyboard.press_and_release('ctrl+v')
+                time.sleep(0.2)
+                pyperclip.copy(old)
+            except: keyboard.write(text + " ")
 
     def _process_audio(self, raw_chunks):
-        """Отправка захваченного куска данных на сервер."""
-        if not raw_chunks:
-            return
-
+        if not raw_chunks: return
         audio_array = np.concatenate(raw_chunks, axis=0)
-        duration = len(audio_array) / SAMPLE_RATE
-
-        if duration < MIN_DURATION:
-            return
-
-        # WAV в памяти
         buffer = io.BytesIO()
         sf.write(buffer, audio_array, SAMPLE_RATE, format="WAV")
         buffer.seek(0)
-
         try:
-            files = {"file": ("audio.wav", buffer, "audio/wav")}
-            r = requests.post(f"{SERVER_URL}/transcribe", files=files)
+            r = requests.post(f"{SERVER_URL}/transcribe", files={"file": ("audio.wav", buffer)}, timeout=60)
             if r.status_code == 200:
-                data = r.json()
-                # Берем любой текст, который пришел
-                text = (data.get("formatted_text") or data.get("transcription") or "").strip()
-                if text:
-                    print(f">> {text}")
-
-                    # Всегда прямой ввод через keyboard.write — минимальный и стабильный режим
-                    with self.typing_lock:
-                        try:
-                            keyboard.write(text + " ", delay=0.02)
-                        except Exception as e:
-                            print(f"Ошибка ввода текста: {e}")
-        except Exception as e:
-            print(f"Ошибка сервера: {e}")
-            try:
-                self._set_tray_status('stopped')
-            except Exception:
-                pass
+                text = (r.json().get("formatted_text") or r.json().get("transcription") or "").strip()
+                self._insert_text(text)
+        except: self._update_status('error')
 
     def toggle(self):
-        base_dir = os.path.dirname(__file__)
-
         if not self.is_recording:
-            # СТАРТ
-            with self.lock:
-                self.audio_data = []  # Гарантированная очистка перед началом
-
+            with self.lock: self.audio_data = []
             self.is_recording = True
+            base_dir = os.path.dirname(__file__)
             play_wav_background(os.path.join(base_dir, "start.wav"))
-
-            self.recording_thread = threading.Thread(target=self._record_loop, daemon=True)
-            self.recording_thread.start()
-            print("Слушаю...")
-            # Обновляем иконку в трее
-            try:
-                self._set_tray_status('recording')
-            except Exception:
-                pass
+            threading.Thread(target=self._record_loop, daemon=True).start()
+            self._update_status('recording')
         else:
-            # СТОП
             self.is_recording = False
+            base_dir = os.path.dirname(__file__)
             play_wav_background(os.path.join(base_dir, "stop.wav"))
-
-            # ИЗОЛЯЦИЯ: Забираем данные под замком и сразу обнуляем буфер
             with self.lock:
-                captured_chunks = self.audio_data
-                self.audio_data = [] 
+                chunks = self.audio_data
+                self.audio_data = []
+            threading.Thread(target=self._process_audio, args=(chunks,), daemon=True).start()
+            self._update_status('idle')
 
-            # Обработка того, что успели забрать
-            threading.Thread(target=self._process_audio, args=(captured_chunks,), daemon=True).start()
-            # Обновляем иконку в трее
-            try:
-                self._set_tray_status('idle')
-            except Exception:
-                pass
-
-    def run(self, tray=False):
-        print(f"Запущено. Порт: {SERVER_URL}. Кнопка: F9")
-        if tray:
-            # Запускаем обработку горячих клавиш в фоне, чтобы основным потоком занимался трэй
-            threading.Thread(target=self._keyboard_loop, daemon=True).start()
-            # На Windows трэй работает надёжнее, если message loop запущен в основном потоке
-            try:
-                self._start_tray_blocking()
-            except Exception as e:
-                print(f"Не удалось запустить трэй в основном потоке: {e}. Пытаюсь запустить в фоне")
-                try:
-                    self._start_tray()
-                except Exception as e2:
-                    print(f"Fallback трэя провалился: {e2}")
-        else:
-            keyboard.add_hotkey('f9', self.toggle)
-            keyboard.wait()
-
-    def _keyboard_loop(self):
-        """Helper: регистрирует горячую клавишу и блокирует поток на keyboard.wait()."""
-        keyboard.add_hotkey('f9', self.toggle)
-        keyboard.wait()
-
-    # ---- Трей: реализация ----
-    def _start_tray(self):
-        """Создать и запустить иконку в системном трее (в фоне)."""
+    def _update_status(self, status):
         if self.tray_icon:
-            return
+            color = "#2ecc71" if status == 'idle' else "#e74c3c" if status == 'recording' else "#95a5a6"
+            self.tray_icon.icon = self._generate_tray_icon(color)
+        if self.overlay.root:
+            self.overlay.root.after(0, self.overlay.update, status)
 
-        # меню
-        menu = pystray.Menu(
-            pystray.MenuItem('Toggle Recording', self._on_tray_toggle),
-            pystray.MenuItem('Quit', self._on_tray_quit),
-        )
+    def run(self):
+        keyboard.add_hotkey('ctrl+alt+q', self.toggle)
+        
+        def run_tray():
+            self.tray_icon = pystray.Icon('whisper-typing', self._generate_tray_icon("#2ecc71"), 'Whisper')
+            self.tray_icon.run()
 
-        icon = pystray.Icon('whisper-typing', self._green_icon, 'Whisper Typing (Idle)', menu)
-        self.tray_icon = icon
-
-        # Попытка запустить detached backend (если поддерживается), иначе в фоне
-        try:
-            icon.run_detached()
-        except Exception as e:
-            # Показываем ошибку для отладки
-            print(f"run_detached failed: {e}; запускаю icon.run() в фоне")
-            try:
-                threading.Thread(target=icon.run, daemon=True).start()
-            except Exception as e2:
-                print(f"Запуск icon.run() в фоне провалился: {e2}")
-
-    def _start_tray_blocking(self):
-        """Создать и запустить иконку в системном трее (blocking, должен быть вызван в основном потоке)."""
-        if self.tray_icon:
-            return
-
-        menu = pystray.Menu(
-            pystray.MenuItem('Toggle Recording', self._on_tray_toggle),
-            pystray.MenuItem('Quit', self._on_tray_quit),
-        )
-
-        icon = pystray.Icon('whisper-typing', self._green_icon, 'Whisper Typing (Idle)', menu)
-        self.tray_icon = icon
-
-        # Установим начальное состояние
-        try:
-            self._set_tray_status('idle')
-        except Exception:
-            pass
-
-        try:
-            icon.run()
-        except Exception as e:
-            print(f"Запуск трэя в основном потоке провалился: {e}")
-
-    def _set_tray_status(self, status):
-        """Обновить иконку и подсказку в трее в зависимости от статуса."""
-        if not self.tray_icon:
-            return
-
-        if status == 'recording':
-            self.tray_icon.icon = self._red_icon
-            self.tray_icon.title = "Whisper Typing (Recording)"
-        elif status == 'idle':
-            self.tray_icon.icon = self._green_icon
-            self.tray_icon.title = "Whisper Typing (Idle)"
-        else:
-            self.tray_icon.icon = self._gray_icon
-            self.tray_icon.title = "Whisper Typing (Stopped/Error)"
-
-    def _on_tray_toggle(self, icon, item):
-        # Вызывается в потоке трея
-        self.toggle()
-
-    def _on_tray_quit(self, icon, item):
-        # Попытка корректно завершить работу и убрать иконку
-        try:
-            self.is_recording = False
-        except Exception:
-            pass
-        try:
-            keyboard.unhook_all()
-        except Exception:
-            pass
-        try:
-            icon.stop()
-        except Exception:
-            pass
-        os._exit(0)
-
+        threading.Thread(target=run_tray, daemon=True).start()
+        print("Running with modern HUD. Ctrl+Alt+Q to toggle.")
+        self.overlay.run()
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Whisper Typing Client")
-    parser.add_argument('--tray', action='store_true', help='Enable system tray icon')
-    args = parser.parse_args()
-
     client = VoiceTypingClient()
-    client.run(tray=args.tray)
+    client.run()

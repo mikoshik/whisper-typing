@@ -15,6 +15,6 @@ WScript.Sleep 8000
 ' Чтобы иконка в системном трее нормально отобразилась, показываем окно клиента (1)
 ' и передаём аргумент --tray. Если нужен запуск без консоли, можно использовать
 ' альтернативу через pythonw (py -3w) — закомментированная строка ниже.
-WshShell.Run "cmd /c uv run python client.py --tray", 1, False
+WshShell.Run "cmd /c uv run python client.py --tray", 0, False
 ' Альтернатива (без консоли, если установлен py launcher):
 ' WshShell.Run "py -3w -m uv run client.py -- --tray", 0, False
