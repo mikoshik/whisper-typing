@@ -5,16 +5,16 @@ strPath = "C:\tools\whisper-typing"
 WshShell.CurrentDirectory = strPath
 
 ' 1. Запуск сервера (0 - скрыть окно, False - не ждать завершения)
-' Используем uv run для запуска в контексте проекта
-WshShell.Run "cmd /c uv run server.py", 0, False
+' Используем uv run для запуска в облачном режиме (Whisper + Llama на Groq)
+' Убедитесь, что переменная окружения GROQ_API_KEY установлена в системе 
+' или замените команду на: "cmd /c uv run server.py --use-groq --llm-provider groq --groq-api-key=ВАШ_КЛЮЧ"
+WshShell.Run "cmd /c uv run server.py --use-groq --llm-provider groq --llm-model openai/gpt-oss-20b --groq-api-key=API-key", 0, False
 
-' 2. Пауза 8 секунд (даем время серверу загрузить модель в видеокарту)
-WScript.Sleep 8000
+
+' 2. Пауза 2 секунды (в облачном режиме старт почти мгновенный, модель качать не надо)
+WScript.Sleep 2000
 
 ' 3. Запуск клиента
-' Чтобы иконка в системном трее нормально отобразилась, показываем окно клиента (1)
-' и передаём аргумент --tray. Если нужен запуск без консоли, можно использовать
-' альтернативу через pythonw (py -3w) — закомментированная строка ниже.
-WshShell.Run "cmd /c uv run python client.py --tray", 0, False
-' Альтернатива (без консоли, если установлен py launcher):
-' WshShell.Run "py -3w -m uv run client.py -- --tray", 0, False
+' Запускаем клиент в скрытом режиме (0), оверлей сам появится когда нужно.
+' Клиент по умолчанию использует оверлей и трей.
+WshShell.Run "cmd /c uv run python client.py", 0, False

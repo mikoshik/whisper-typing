@@ -24,4 +24,5 @@ dependencies = [
     "uvicorn>=0.35.0",
     "openai>=1.0.0",
     "customtkinter>=5.2.2",
+    "pycaw>=20240210",
 ]
